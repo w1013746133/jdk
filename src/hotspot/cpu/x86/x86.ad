@@ -4062,10 +4062,19 @@ instruct gather(legVec dst, memory mem, legVec idx, rRegP tmp, legVec mask) %{
   effect(TEMP dst, TEMP tmp, TEMP mask);
   format %{ "load_vector_gather $dst, $mem, $idx\t! using $tmp and $mask as TEMP" %}
   ins_encode %{
+    assert(UseAVX >= 2, "sanity");
+
     int vlen_enc = vector_length_encoding(this);
     BasicType elem_bt = Matcher::vector_element_basic_type(this);
+
+    assert(Matcher::vector_length_in_bytes(this) >= 16, "sanity");
     assert(!is_subword_type(elem_bt), "sanity"); // T_INT, T_LONG, T_FLOAT, T_DOUBLE
-    __ vpcmpeqd($mask$$XMMRegister, $mask$$XMMRegister, $mask$$XMMRegister, vlen_enc);
+
+    if (vlen_enc == Assembler::AVX_128bit) {
+      __ movdqu($mask$$XMMRegister, ExternalAddress(vector_all_bits_set()), noreg);
+    } else {
+      __ vmovdqu($mask$$XMMRegister, ExternalAddress(vector_all_bits_set()), noreg);
+    }
     __ lea($tmp$$Register, $mem$$Address);
     __ vgather(elem_bt, $dst$$XMMRegister, $tmp$$Register, $idx$$XMMRegister, $mask$$XMMRegister, vlen_enc);
   %}
@@ -4080,9 +4089,14 @@ instruct evgather(vec dst, memory mem, vec idx, rRegP tmp, kReg ktmp) %{
   effect(TEMP dst, TEMP tmp, TEMP ktmp);
   format %{ "load_vector_gather $dst, $mem, $idx\t! using $tmp and ktmp as TEMP" %}
   ins_encode %{
+    assert(UseAVX > 2, "sanity");
+
     int vlen_enc = vector_length_encoding(this);
     BasicType elem_bt = Matcher::vector_element_basic_type(this);
-    __ kxnorwl($ktmp$$KRegister, $ktmp$$KRegister, $ktmp$$KRegister);
+
+    assert(!is_subword_type(elem_bt), "sanity"); // T_INT, T_LONG, T_FLOAT, T_DOUBLE
+
+    __ kmovwl($ktmp$$KRegister, ExternalAddress(vector_all_bits_set()), noreg);
     __ lea($tmp$$Register, $mem$$Address);
     __ evgather(elem_bt, $dst$$XMMRegister, $ktmp$$KRegister, $tmp$$Register, $idx$$XMMRegister, vlen_enc);
   %}
