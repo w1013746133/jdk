@@ -503,12 +503,19 @@ public:
                                    XMMRegister xtmp2, XMMRegister xtmp3, KRegister mask, KRegister ktmp, int vlen_enc, int vlen);
 
   void vgather_subword(BasicType elem_ty, XMMRegister dst,  Register base, Register idx_base, Register offset,
-                       XMMRegister xtmp1, XMMRegister xtmp2, XMMRegister xtmp3, Register rtmp, Register midx,
-                       Register length, int vector_len, int vlen_enc);
+                       Register mask, XMMRegister xtmp1, XMMRegister xtmp2, XMMRegister xtmp3, Register rtmp,
+                       Register midx, Register length, int vector_len, int vlen_enc);
 
   void vgather8b(BasicType elem_bt, XMMRegister dst, Register base, Register idx_base, Register rtmp, int vlen_enc);
 
   void vgather8b_offset(BasicType elem_bt, XMMRegister dst, Register base, Register idx_base,
                               Register offset, Register rtmp, int vlen_enc);
+#ifdef _LP64
+  void vgather8b_masked(BasicType elem_bt, XMMRegister dst, Register base, Register idx_base,
+                        Register mask, Register midx, Register rtmp, int vlen_enc);
+
+  void vgather8b_masked_offset(BasicType elem_bt, XMMRegister dst, Register base, Register idx_base,
+                               Register offset, Register mask, Register midx, Register rtmp, int vlen_enc);
+#endif
 
 #endif // CPU_X86_C2_MACROASSEMBLER_X86_HPP
