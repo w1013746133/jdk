@@ -1584,50 +1584,49 @@ void C2_MacroAssembler::vpackI2X(BasicType elem_bt, XMMRegister dst,
 void C2_MacroAssembler::vgather_subword_avx3(BasicType elem_bt, XMMRegister dst, Register base, XMMRegister offset,
                                              Register idx_base, int idx_off, XMMRegister idx_vec, XMMRegister ones,
                                              XMMRegister xtmp, KRegister gmask, int vlen_enc) {
+  int mask_shift = -1;
+  int bitlevel_offset_shift = -1;
+  int nomlarized_index_shift = -1;
+  Address::ScaleFactor scale = Address::no_scale;
+
   if (elem_bt == T_SHORT) {
-    evmovdquq(idx_vec, Address(idx_base, idx_off, Address::times_4), vlen_enc);
-    if (offset != xnoreg) {
-      vpaddd(idx_vec, idx_vec, offset, vlen_enc);
-    }
-    // Normalize the indices to multiple of 2.
-    vpslld(xtmp, ones, 1, vlen_enc);
-    vpand(xtmp, idx_vec, xtmp, vlen_enc);
-    // Load double words from normalized indices.
-    evpgatherdd(dst, gmask, Address(base, xtmp, Address::times_2), vlen_enc);
-    // Compute bit level offset of actual short value with in each double word
-    // lane.
-    vpsrld(xtmp, ones, 31, vlen_enc);
-    vpand(xtmp, idx_vec, xtmp, vlen_enc);
-    vpslld(xtmp, xtmp, 4, vlen_enc);
-    // Move the short value at respective bit offset to lower 16 bits of each
-    // double word lane.
-    vpsrlvd(dst, dst, xtmp, vlen_enc);
-    // Pack double word vector into short vector.
-    vpackI2X(T_SHORT, dst, ones, xtmp, vlen_enc);
+    mask_shift = 31;
+    scale = Address::times_2;
+    bitlevel_offset_shift = 4;
+    nomlarized_index_shift = 1;
   } else {
     assert(elem_bt == T_BYTE, "");
-    evmovdquq(idx_vec, Address(idx_base, idx_off, Address::times_4), vlen_enc);
-    if (offset != xnoreg) {
-      vpaddd(idx_vec, idx_vec, offset, vlen_enc);
-    }
-    // Normalize the indices to multiple of 4.
-    vpslld(xtmp, ones, 2, vlen_enc);
-    vpand(xtmp, idx_vec, xtmp, vlen_enc);
-    // Load double words from normalized indices.
-    evpgatherdd(dst, gmask, Address(base, xtmp, Address::times_1), vlen_enc);
-    // Compute bit level offset of actual byte value with in each double word
-    // lane.
-    vpsrld(xtmp, ones, 30, vlen_enc);
-    vpand(xtmp, idx_vec, xtmp, vlen_enc);
-    vpslld(xtmp, xtmp, 3, vlen_enc);
-    // Move the byte value at respective bit offset to lower 8 bits of each
-    // double word lane.
-    vpsrlvd(dst, dst, xtmp, vlen_enc);
-    // Pack double word vector into byte vector.
-    vpackI2X(T_BYTE, dst, ones, xtmp, vlen_enc);
+    mask_shift = 30;
+    scale = Address::times_1;
+    bitlevel_offset_shift = 3;
+    nomlarized_index_shift = 2;
   }
+
+  evmovdquq(idx_vec, Address(idx_base, idx_off, Address::times_4), vlen_enc);
+  if (offset != xnoreg) {
+    vpaddd(idx_vec, idx_vec, offset, vlen_enc);
+  }
+  // Normalize the indices to multiple of nomlarized_index_shift.
+  vpslld(xtmp, ones, nomlarized_index_shift, vlen_enc);
+  vpand(xtmp, idx_vec, xtmp, vlen_enc);
+  // Load double words from normalized indices.
+  evpgatherdd(dst, gmask, Address(base, xtmp, scale), vlen_enc);
+  // Compute bit level offset of actual sub-word within each double word
+  // lane.
+  vpsrld(xtmp, ones, mask_shift, vlen_enc);
+  vpand(xtmp, idx_vec, xtmp, vlen_enc);
+  vpslld(xtmp, xtmp, bitlevel_offset_shift, vlen_enc);
+  // Move the sub-word value at respective bit offset to lower
+  // 16 bits(for short)/8 bits(for byte) of each double word lane.
+  vpsrlvd(dst, dst, xtmp, vlen_enc);
+  // Pack double word vector into short vector.
+  vpackI2X(elem_bt, dst, ones, xtmp, vlen_enc);
 }
 
+// Gather sub-words from gather indices using integral gather instructions,
+// because of the lane size mismatch b/w int and sub-words, algorithm makes multiple
+// calls to leaf level routine(vgather_subword_avx3) which performs actual gather
+// operation.
 void C2_MacroAssembler::vgather_subword_masked_avx3(BasicType elem_bt, XMMRegister dst, Register base, Register idx_base,
                                                     Register offset, XMMRegister offset_vec, XMMRegister idx_vec,
                                                     XMMRegister xtmp1, XMMRegister xtmp2, XMMRegister xtmp3, KRegister mask,
@@ -1648,7 +1647,7 @@ void C2_MacroAssembler::vgather_subword_masked_avx3(BasicType elem_bt, XMMRegist
     // Loop to gather 8(64bit), 16(128bit), 32(256bit) or 64(512bit) bytes from
     // memory into vector using integral gather instructions. Number of loop
     // iterations depends on the maximum integral vector size supported by
-    // target capped by the gather count i.e. in order to gather 8 bytes over
+    // target, capped by the gather count i.e. in order to gather 8 bytes over
     // AVX-512 targets we need to use 256bit integer gather even though target
     // supports 512 bit integral gather operation.
     for (int i = 0, j = 0; i < lane_count_subwords; i += lane_count_ints, j++) {
@@ -1753,12 +1752,14 @@ void C2_MacroAssembler::vgather8b(BasicType elem_bt, XMMRegister dst,
   vpxor(dst, dst, dst, vlen_enc);
   if (elem_bt == T_SHORT) {
     for (int i = 0; i < 4; i++) {
+      // dst[i] = src[idx_base[i]]
       movl(rtmp, Address(idx_base, i * 4));
       pinsrw(dst, Address(base, rtmp, Address::times_2), i);
     }
   } else {
     assert(elem_bt == T_BYTE, "");
     for (int i = 0; i < 8; i++) {
+      // dst[i] = src[idx_base[i]]
       movl(rtmp, Address(idx_base, i * 4));
       pinsrb(dst, Address(base, rtmp), i);
     }
@@ -1772,6 +1773,7 @@ void C2_MacroAssembler::vgather8b_offset(BasicType elem_bt, XMMRegister dst,
   vpxor(dst, dst, dst, vlen_enc);
   if (elem_bt == T_SHORT) {
     for (int i = 0; i < 4; i++) {
+      // dst[i] = src[idx_base[i] + offset]
       movl(rtmp, Address(idx_base, i * 4));
       addl(rtmp, offset);
       pinsrw(dst, Address(base, rtmp, Address::times_2), i);
@@ -1779,6 +1781,7 @@ void C2_MacroAssembler::vgather8b_offset(BasicType elem_bt, XMMRegister dst,
   } else {
     assert(elem_bt == T_BYTE, "");
     for (int i = 0; i < 8; i++) {
+      // dst[i] = src[idx_base[i] + offset]
       movl(rtmp, Address(idx_base, i * 4));
       addl(rtmp, offset);
       pinsrb(dst, Address(base, rtmp), i);
